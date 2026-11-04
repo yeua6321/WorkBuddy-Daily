@@ -6,7 +6,7 @@ on:
     # 避开整点高峰；GitHub schedule 仍可能延迟，不能保证准点。
     - cron: "17 23 * * *"    # 07:17
     - cron: "17 4 * * *"     # 12:17
-    - cron: "37 15 * * *"    # 23:37
+    # - cron: "37 15 * * *"    # 23:37
   workflow_dispatch:          # 支持手动触发
 
 permissions:
