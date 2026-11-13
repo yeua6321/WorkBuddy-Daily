@@ -1,5 +1,94 @@
 # 更新日志
 
+## v3.49（2026-11-13）
+
+- 修复 Issue #57：任务有效期提醒不再复用开跑前的调度快照，改为在最终补领后读取终态任务表。
+- 提醒与推送完成度统一按 `claimed`、`claimed=true` 或本轮已确认领奖回执判定；`completed` 但未领奖仍提示，`locked`、未下发和活动域任务不混入。
+- 补充 PR #58 的活动下发说明：`campaign_*` 不进入成长中心任务清单，活动状态只读活动域 `tasks[]`；读取失败与真实空列表分开排查。
+- 新增调度快照误报、领取状态、完成未领奖、活动任务、锁定任务、无任务行的回归测试。
+
+## v3.48（2026-11-13）
+
+- 打通星巴克 `app`（原判定「必须真机」，已推翻）：判据是「agentos 云端会话真跑完一轮对话」，与手机型号、设备登录无关。脚本按 App 身份头（`X-Client-Product: workbuddy-app` / `X-Client-Platform: android` / `WorkBuddyApp/2.8.0`）建会话，再用一次 `POST {boxUrl}/acp/bootstrap?includeUserEcho=true` 把 `initialize + session/new + session/prompt` 一起提交；只认结构化 `stopReason=end_turn`，EOF、截断、超时和错误事件均判失败。
+- 整流链路只有 4 个请求：`viewed`（建进度行）→ `POST /v2/as/conversations/` → `acp/bootstrap` → `claim`；prompt 固定「你只需要回复"Hi"」，把模型生成压到最短。实测对话 10 秒内 `end_turn`，5 秒内判据落库。
+- 反证留档：补发埋点（`app_login` / `chat_request_send`，6 组信封）、网页 `webchat` 会话、APK 事件层复刻、客户端自造 `Acp-Connection-Id`（服务端 404 `connection not found`）、创建会话时 `conversationOrigin=workbuddy-app` 但不跑 ACP（会话卡 `CREATING`）全部不计数。
+- `campaign_starbucks_2026/app` 从「只提示」改为自动执行（`kind="app"` → `_campaign_app_chat`），新增 `CAMPAIGN_APP_*` 常量与 `_campaign_app_headers`；`t_campaigns` 对 `app`/`desktop` 统一「单发一次 + 长轮询」，不再重发。
+- 安全加固：App 建会话与 sandbox bootstrap 均恢复 TLS 证书校验；服务端下发的 `boxUrl` 只允许 HTTPS 的 `tencent.com` / `codebuddy.cn` / `workbuddy.cn` / `workbuddy.agentos-worker.net` 官方域，避免把 Bearer token 发往任意主机。
+- 稳定性加固：`_accept_with_verify` 对网络与 JSON 解析异常显式返回失败；`t_accept_all` 每轮只读取一次完整任务表并按 `task_code` 结算，保留 3 轮有界轮询；单任务重试异常只影响该任务。
+- 测试：`_harness` 支持 `fail_kinds` 模拟触发失败；新增 App SSE 多行帧/TLS/box 主机、accept 异常隔离与批量回读、全仓文本和 commit message 隐私回归；全套 `194` 项通过。
+- 修复 `accept` 误判（线上日志实证）：上游对已登记任务回 `status="already_accepted"`（对已完成任务回 `error` + `task already completed`），旧实现只认 `status=="accepted"`，于是「批量接受 14 项 → 成功 14」之后又被判成「10 项未落账」，重试全部撞 `already_accepted` 记为失败，最终整条任务链（`skill_share`、`expert_use_*`、`expert_5`、`automation_1`…）被「接受任务失败，跳过」。现在以回读 `accept_status ∈ {accepted, completed, claimed}` 为准，并对批量接受加 3 次 × 2 秒落账等待（新增 `ACCEPT_SETTLE_GAP` / `ACCEPT_BATCH_SETTLE` / `ACCEPT_BATCH_TRIES`）。
+- 实测：两个测试账号（脱敏，记为账号 A / B）从 `app 0/1` → `1/1 completed → claimed`（各 +100 积分）；8 账号活动任务 6/6 全部可自动完成并领奖。
+
+## v3.47（2026-11-12）
+
+- 新增小程序活动任务适配（`t_campaigns`）：星巴克协作 `campaign_starbucks_2026`（`ai_chat` ×3、`expert`）与记者节福利 `campaign_reporter_2026`（`expert_chat`、`skill_use`），判据走活动域 `/portal/activity/tasks`，进度/领奖/回读一体化。
+- **完成≠到账**：活动任务必须 `POST /portal/activity/tasks/<code>/claim?activity_code=<活动码>` 才入账，`code==0` 且回读出现 `claimed_at` 才算成功；此前"完成即自动结算"的判断作废。
+- 技能判据按 slug 认人：`skill_use` 的 `skillName` 必须传 `interview-material-organizer`，传中文显示名 `采访素材整理` 服务端不计数（回归测试锁定该口径）。
+- 判据信封并入真机页面上下文（`pageURL`/`pageName`），`mp_report` 新增 `env_extra` 参数；专家类任务固定使用活动指定 `expert_id`，不再回落随机专家。
+- 判据异步落库：3 秒快轮询 + 10 秒慢轮询各一轮，仍未落库打印 `⏳ 判据延迟未落库` 交给下一轮补领；补发上限收敛为「还差几次」（不再 `+2`），判据延迟时不对官方活动多发事件。
+- 领奖以回读为准：`_campaign_claim` 只认 claim 后回读到的 `claimed_at`（`CAMPAIGN_CLAIM_GAP`/`CAMPAIGN_CLAIM_POLL` 控制 4 秒 × 5 次），未落库打印「已提交但未回读到 claimed_at」留待下一轮，不再把延迟入账误报成 +积分。
+- 活动只下发部分任务时按实际 `tasks[]` 处理：本地 spec 里未下发的任务记「未下发/已下线」并跳过，不再按本地默认 target 硬发事件；`campaign_tasks` 对 HTTP 非 200 / 业务码非 0 记「活动任务读取失败」，401、500 不再静默变成「活动已结束」。
+- 新增 `CampaignTaskTests` / `CampaignEventShapeTests` / `CampaignClaimTests` / `CampaignReadTests` 共 19 项（含漏发补发、重发上限、已领跳过、slug 口径、页面上下文透传、灵感产物 id 口径、真实环境任务不伪造、claim 回读成功/未落库不记成功/HTTP 失败不回读、读取失败落日志）；全套 `174` 项测试通过（含基线并入的桌面认证与任务守卫回归）。
+- 实测 7 账号 4 项任务全部 `completed → claimed`，单账号本轮入账 350 积分；`desktop_same` 在 2 个账号上实测 `0/1 → 1/1 → claimed`（+100 积分）。
+- 打通记者节 `desktop_same`：只需一条桌面域 `playbook_prompt_send`，且 `id` 必须是产物目录名 `cnb-content-calendar`（注册表 slug `content-calendar`、中文名都不计数），5 秒内到账；无需真跑桌面端、无需同机登录（真实 `chat_request_send` 复刻、网页会话、渠道分享三条路实测均 0/1，判据只认这条灵感事件）。
+- 星巴克 `app`（手机端）仍需真机登录后与 AI 对话一次，脚本只提示不伪造，任务完成后下次运行自动领奖。
+
+## v3.46（2026-11-12）
+
+- 桌面认证换血增加 `_wb_all_swapped` 标记：仅还原带脚本标记的认证文件，
+  用户重新登录后的认证不会被旧备份覆盖。
+- `swap_info()` 改为返回 bool，并处理认证文件缺失、不可读、令牌无效和原子写入
+  失败；没有可用桌面认证时直接降级为指纹上报，不再抛 `FileNotFoundError`。
+- `t_desktop_tasks()` / `t_workstation()` 的认证还原放入 `finally`，守护进程超时、
+  会话异常或依赖错误退出时也会恢复原登录态并重启桌面端。
+- `t_workstation()` 检查 `restart_desktop()` 返回值，不再在守护进程不可用时
+  逐账号空等 `daemon_chat()` 的 280 秒 deadline。
+- `t_team_3()` / `t_expert_5()` / `t_template_5()` 增加任务未下发守卫，避免
+  网络抖动或任务下线时继续发送真实对话/遥测。
+- 删除 `daemon_chat()` 中无用的 `websocket` 导入，`cdp_ui_send()` 将可选依赖
+  导入移入异常边界；`requirements.txt` 补充 `websocket-client`。
+- 新增认证还原、旧备份隔离、异常清理、工作台空等和任务守卫回归；全套
+  `155` 项测试通过。
+
+## v3.45（2026-11-12）
+
+- 修复 `Library_read`：`/v2/report` 改为服务端要求的裸数组事件体，不再使用
+  `{"common":...,"events":[...]}` 信封；HTTP 或业务码失败会明确记录且不领奖。
+- `Library_read` 上报成功后回读任务进度，只有 `completed` 才领取奖励。
+- 修复 `Buddy_App`：`buddyapp_enter_click.isFirstPage` 由字符串 `"1"` 改为
+  bool `true`，避免服务端按格式校验丢弃第 3 条事件。
+- `Buddy_App` 五连上报后立即回读进度；上报失败、部分事件被丢弃或进度未点亮时
+  不再打印“OK”，也不会误领奖励。
+- 新增裸数组事件体、bool 类型、上报失败可见性和进度回读领奖回归；全套
+  `143` 项测试通过。
+
+## v3.44（2026-11-12）
+
+- 新增 `skill_share` 实链：按 WorkBuddy 5.9.3 客户端调用 Open Platform
+  `asset-shares/c2c/channels`，从当前市场列表选取技能并创建真实分享渠道。
+- 仅创建渠道不会点亮任务；按官方事件族上报 `skill_share_channel_action`
+  的 `click/success`，随后回读服务端进度，只有 `completed + 1/1` 才领取奖励。
+- 渠道失败、事件上报失败、进度未点亮或回执缺少 `share_code/link` 时均不领奖，
+  不使用 `skill_share_success` 等无源码证据的事件名。
+- 6 个本地账号已逐一完成并回读 `accept_status=claimed`、`progress=1/1`；
+  每个账号实到 `+100积分+5能量`。
+- 新增渠道、回读、未点亮不领奖、锁定/已领取、空市场与失败分支回归；全套 `138` 项测试通过。
+
+## v3.43（2026-11-11）
+
+- 修复补签到点后状态查询或领取请求发生网络异常时，旧记录一直停在已到点状态、后续 cron 重复请求的问题。
+- 已到点的补签轮次遇到异常会消费当前轮次并排到下一固定时点；第二轮仍异常则清空状态并标记耗尽。
+- 补签到点的状态查询遇到明确非 2xx 或业务错误时立即清理状态，不继续重试。
+- 兼容展示新任务码 `skill_share`（分享技能给好友），仍不伪造未验证的分享事件。
+- 新增异常消费、第二轮耗尽和非 2xx 清理回归；全套 `133` 项测试通过。
+
+## v3.42（2026-11-11）
+
+- 新增签到分钟级补签队列：仅 `HTTP 500 + code=10001 + “稍后重试”` 进入持久化状态，其它 10001、429 和普通 5xx 不误排队。
+- 补签轮次从首次失败时刻统一计算，分别为第 10 分钟、第 40 分钟；每次先查官方签到状态，已签立即清状态，两轮后自动耗尽。
+- 新增 `--sign-retry-only`：外部 cron 只执行到点补签，不跑桌面/云端任务，不使用长 `sleep`；状态按 UID 哈希隔离，不保存手机号或凭据。
+- 新增零请求未到点、已签清理、跨日失效、40 分钟基准、两轮耗尽和状态落盘失败回归；全套测试通过。
+
 ## v3.41（2026-11-07）
 
 - 重排盲盒与旅行状态机：任务奖励结算后，先处理旅行 `arrived` 礼物并回读确认 `idle`，再开盲盒，最后按当日名额派出。
