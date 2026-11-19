@@ -6,7 +6,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含（含国际版每日活跃）**
 
-> 当前版本：**v51**（2026-11-14） · 最新更新：完成率明确标注桌面口径，并显示桌面/小程序/等级任务行数量
+> 当前版本：**v53**（2026-11-19） · 最新更新：登录工具输出前校验 AT/RT 结构，坏 RT 不再写入环境变量
 
 [简体中文](README.md) · [English](docs/README.en.md) · [繁體中文](docs/README.zh-Hant.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Português (BR)](docs/README.pt-BR.md)
 
@@ -231,7 +231,7 @@ python workbuddy_login.py 13800000000 123456 # 指定手机号+验证码（跳�
 python workbuddy_login.py --verify           # 登录后额外验证 RT 是否可用
 ```
 
-**流程**：输入手机号 → 自动发送短信验证码 → 输入收到的验证码 → 服务端直接下发 Token → 输出 `手机号:AT:RT`。
+**流程**：输入手机号 → 自动发送短信验证码 → 输入收到的验证码 → 服务端直接下发 Token → 本地校验 AT/RT 结构 → 输出 `手机号:AT:RT`。RT 不是合法 JWT 时会直接拒绝输出，不会把坏凭据写进变量。
 
 ```
 ╔══════════════════════════════════════════════╗
@@ -258,9 +258,9 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
 
 **输出**：结果同时保存到 `wb_login_result.json`（已被 `.gitignore` 屏蔽，不会提交）。
 
-> 💡 拿到这行 `手机号:AT:RT` 后，直接粘贴到青龙的 `WORKBUDDY_REFRESH_TOKEN` 变量或 GitHub Secrets 即可，主脚本会自动续期、永不过期。
+> 💡 拿到这行 `手机号:AT:RT` 后，直接粘贴到青龙的 `WORKBUDDY_REFRESH_TOKEN` 变量或 GitHub Secrets 即可，主脚本会自动续期、永不过期。若登录工具提示 RT 结构无效，先不要复制任何内容，重新登录或反馈脱敏后的长度/字段信息。
 >
-> 🛠️ **实现说明**：走官方**插件登录接口** `/v2/plugin/login/send-sms` 与 `/v2/plugin/login/token`，由服务端直接下发 `accessToken` / `refreshToken`，**不再解析 Keycloak 登录页表单**——这是解决"验证码正确却提示验证码错误"的关键。
+> 🛠️ **实现说明**：走官方**插件登录接口** `/v2/plugin/login/send-sms` 与 `/v2/plugin/login/token`，由服务端直接下发 `accessToken` / `refreshToken`，**不再解析 Keycloak 登录页表单**；输出前还会校验 JWT 三段结构、typ 和国内签发域，避免 `12153 token format error` 被带到后续任务。
 
 ---
 ## 🔑 如何获取变量值（首次必看）
@@ -574,7 +574,7 @@ python daily_forward.py daily.log --wx
 - **🔍 未覆盖任务检测**：每次运行扫描成长任务列表，发现脚本尚未适配的新任务会打印 ⚠️ 提示，方便及时更新脚本。
 - **⏰ 任务到期预警**：读最终补领后的任务行 `valid_end`，对「未完成/未领奖 + 7 天内到期 / 已过期」的任务打印 ⏰ 提醒，并与推送完成度共用同一份终态数据。
 - **♻️ 幂等补缺**：所有任务先查进度再执行，已完成 / 已领取直接跳过，重复运行零副作用。
-- **🔗 真实技能分享**：按 WorkBuddy 5.9.3 客户端实证链路调用 Open Platform `asset-shares/c2c/channels`，创建真实分享链接后再上报官方渠道事件；只以服务端 `1/1` 和领取回执判定成功。
+- **🔗 真实技能分享**：按 WorkBuddy 客户端实证链路调用 Open Platform `asset-shares/c2c/channels`，创建真实分享渠道后再上报 `skill_share_channel_action`；判据固定为 `action=wechat`、`panelAction=success`、`id=channel_id`，只以服务端 `1/1` 和领取回执判定成功。
 - **⏰ 智能续期**：距上次刷新 > 10 天或 AT 7 天内过期才刷新，避免无谓轮换。
 - **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
 - **🎛️ 子任务开关**：`WORKBUDDY_TASKS`（白名单）/ `WORKBUDDY_SKIP_TASKS`（黑名单）可自由裁剪要执行的子任务（含玩法），被跳过的任务不会被完成也不会被领奖——适合把积分分摊到后面几个月领。
@@ -709,7 +709,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ---
 
 ## 📦 版本与发布
-- **当前发布版**：`v51`（2026-11-14，任务完成率口径展示修复）· **脚本版本**：`v3.50`（区分桌面/小程序/等级任务行）
+- **当前发布版**：`v53`（2026-11-19，登录工具 AT/RT 结构校验）· **脚本版本**：`v3.51` · **登录工具**：`v2.1`
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
 
